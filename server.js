@@ -10,6 +10,7 @@ const io = require("socket.io")(server, {
   cors: {
     origin: "https://handwrittenocr.netlify.app",
     methods: ["GET", "POST"],
+    credentials: true
   },
 })
 
