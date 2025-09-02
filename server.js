@@ -13,10 +13,17 @@ const io = require("socket.io")(server, {
     credentials: true
   },
 })
+const axios = require("axios")
+const { OAuth2Client } = require("google-auth-library")
+const querystring = require("querystring")
 
-
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
+const CLIENT_SECRET = process.env.CLIENT_SECRET
+const REDIRECT_URI = process.env.REDIRECT_URI   // e.g., "http://localhost:9000/auth/google/callback"
+const FRONTEND_URL = process.env.FRONTEND_URL 
 const PORT = process.env.PORT || 9000
 const MONGO_CONNECTION_URL = process.env.MONGO_CONNECTION_URL
+
 
 // === Connect to MongoDB Atlas ===
 mongoose
@@ -63,7 +70,73 @@ app.get("/", async (req, res) => {
     return res.json(null)
   }
 })
+// Step 1: Redirect user to Google's consent screen
+app.get("/auth/google/login", (req, res) => {
+  const googleAuthUrl =
+    "https://accounts.google.com/o/oauth2/v2/auth?" +
+    querystring.stringify({
+      client_id: GOOGLE_CLIENT_ID,
+      redirect_uri: REDIRECT_URI,
+      response_type: "code",
+      scope: "openid email profile",
+      access_type: "offline",
+      prompt: "consent"
+    })
 
+  res.redirect(googleAuthUrl)
+})
+
+// Step 2: Handle callback from Google
+app.get("/auth/google/callback", async (req, res) => {
+  const code = req.query.code
+  if (!code) {
+    return res.status(400).json({ error: "Missing authorization code" })
+  }
+
+  try {
+    // Exchange code for tokens
+    const tokenResponse = await axios.post("https://oauth2.googleapis.com/token", null, {
+      params: {
+        code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI,
+        grant_type: "authorization_code",
+      },
+    })
+
+    const tokens = tokenResponse.data
+
+    if (!tokens.id_token) {
+      return res.status(400).json({ error: tokens })
+    }
+
+    // Verify ID token
+    const client = new OAuth2Client(GOOGLE_CLIENT_ID)
+    const ticket = await client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: GOOGLE_CLIENT_ID,
+    })
+    const payload = ticket.getPayload()
+
+    // Build query params to send user info + tokens to frontend
+    const params = querystring.stringify({
+      email: payload.email,
+      name: payload.name,
+      google_id: payload.sub,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || "",
+    })
+
+    const redirectUrl = `${FRONTEND_URL}/?${params}`
+
+    // Redirect user to frontend with query params
+    res.redirect(redirectUrl)
+  } catch (err) {
+    console.error("Google OAuth Error:", err.response?.data || err.message)
+    res.status(500).json({ error: "OAuth callback failed" })
+  }
+})
 // === Socket.io Events ===
 io.on("connection", (socket) => {
   console.log("⚡ A client connected:", socket.id)
